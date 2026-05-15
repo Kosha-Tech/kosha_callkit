@@ -100,6 +100,11 @@ Android caches a notification channel's sound on first creation; you can't chang
 
 ---
 
-## License
+## License & attribution
 
-Same MIT license as the upstream package — see [LICENSE](LICENSE).
+Licensed under the **Apache License, Version 2.0** — see [LICENSE](LICENSE).
+
+This is a modified fork of [`connectycube_flutter_call_kit`](https://github.com/ConnectyCube/connectycube_flutter_call_kit) v2.8.2.
+Original copyright © ConnectyCube. Modifications © KoshaX team.
+
+Modifications are summarised in the "What this fork adds on top of upstream" section above. As required by Apache 2.0 §4(b), this NOTICE constitutes the statement that this distribution contains modifications from the original work.
