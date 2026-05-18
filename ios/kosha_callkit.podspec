@@ -1,9 +1,9 @@
 #
 # To learn more about a Podspec see http://guides.cocoapods.org/syntax/podspec.html.
-# Run `pod lib lint connectycube_flutter_call_kit.podspec' to validate before publishing.
+# Run `pod lib lint kosha_callkit.podspec' to validate before publishing.
 #
 Pod::Spec.new do |s|
-  s.name             = 'connectycube_flutter_call_kit'
+  s.name             = 'kosha_callkit'
   s.version          = '2.8.2'
   s.summary          = 'Connectycube Call Kit plugin for flutter.'
   s.description      = <<-DESC
