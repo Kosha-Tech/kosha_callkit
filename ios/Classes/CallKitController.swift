@@ -34,19 +34,27 @@ enum CallState : String {
 }
 
 class CallKitController : NSObject {
-    private let provider : CXProvider
+    // Lazy so the provider is constructed with the most recent
+    // CallKitController.providerConfiguration — which Dart populates via
+    // updateConfig (ringtone, icon) AFTER plugin load but BEFORE the first
+    // reportIncomingCall. Eager init at plugin-load time happened before
+    // Dart ran, so the provider snapshotted the default config and the
+    // ringtoneSound was never applied (CallKit silently fell back to
+    // system defaults). Lazy lets the first ring use the right asset.
+    private lazy var provider: CXProvider = {
+        let p = CXProvider(configuration: CallKitController.providerConfiguration)
+        p.setDelegate(self, queue: nil)
+        return p
+    }()
     private let callController : CXCallController
     var actionListener : ((CallEvent, UUID, [String:Any]?)->Void)?
     var currentCallData: [String: Any] = [:]
     private var callStates: [String:CallState] = [:]
     private var callsData: [String:[String:Any]] = [:]
-    
+
     override init() {
-        self.provider = CXProvider(configuration: CallKitController.providerConfiguration)
         self.callController = CXCallController()
-        
         super.init()
-        self.provider.setDelegate(self, queue: nil)
     }
     
     //TODO: construct configuration from flutter. pass into init over method channel
