@@ -78,8 +78,14 @@ public class SwiftConnectycubeFlutterCallKitPlugin: NSObject, FlutterPlugin {
             }
             let ringtone = arguments["ringtone"] as? String
             let icon = arguments["icon"] as? String
-            CallKitController.updateConfig(ringtone: ringtone, icon: icon)
-            
+            let includesInRecents = arguments["includesInRecents"] as? Bool
+            CallKitController.updateConfig(ringtone: ringtone, icon: icon, includesInRecents: includesInRecents)
+            // Push the new config onto the live CXProvider — without this,
+            // CallKit keeps using the configuration captured at provider
+            // init time and the ringtone/icon/recents toggle never takes
+            // effect until app restart.
+            SwiftConnectycubeFlutterCallKitPlugin.callController.refreshProviderConfiguration()
+
             result(true)
         }
         else if call.method == "showCallNotification" {
@@ -107,8 +113,29 @@ public class SwiftConnectycubeFlutterCallKitPlugin: NSObject, FlutterPlugin {
                 return
             }
             
-            SwiftConnectycubeFlutterCallKitPlugin.callController.answerCall(uuid: callId)
-            result(true)
+            SwiftConnectycubeFlutterCallKitPlugin.callController.answerCall(uuid: callId) {
+                result(true)
+            }
+        }
+        else if call.method == "playCallAudio" {
+            guard let arguments = arguments,
+                  let callId = arguments["session_id"] as? String,
+                  let url = arguments["url"] as? String,
+                  let bearerToken = arguments["bearer_token"] as? String else {
+                result(FlutterError(code: "invalid_argument", message: "session_id, url, and bearer_token are required.", details: nil))
+                return
+            }
+
+            do {
+                try SwiftConnectycubeFlutterCallKitPlugin.callController.playCallAudio(
+                    uuid: callId,
+                    url: url,
+                    bearerToken: bearerToken
+                )
+                result(true)
+            } catch {
+                result(FlutterError(code: "play_call_audio_failed", message: error.localizedDescription, details: nil))
+            }
         }
         else if call.method == "reportCallFinished" {
             guard let arguments = arguments else {

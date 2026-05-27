@@ -202,6 +202,22 @@ class ConnectycubeFlutterCallKit {
         .invokeMethod("reportCallAccepted", {'session_id': sessionId});
   }
 
+  /// Plays a short authenticated audio clip through the active iOS CallKit
+  /// audio session.
+  static Future<void> playCallAudio({
+    required String? sessionId,
+    required String url,
+    required String bearerToken,
+  }) async {
+    if (!Platform.isIOS) return Future.value();
+
+    return _methodChannel.invokeMethod("playCallAudio", {
+      'session_id': sessionId,
+      'url': url,
+      'bearer_token': bearerToken,
+    });
+  }
+
   /// Report that the current active call has been ended by your application
   static Future<void> reportCallEnded({
     required String? sessionId,

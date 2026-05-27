@@ -8,6 +8,7 @@
 import Foundation
 import AVFoundation
 import CallKit
+import UIKit
 
 enum CallEvent : String {
     case incomingCall = "incomingCall"
@@ -33,20 +34,41 @@ enum CallState : String {
     case unknown = "unknown"
 }
 
-class CallKitController : NSObject {
-    private let provider : CXProvider
+class CallKitController : NSObject, AVAudioPlayerDelegate {
+    private struct CallAudioRequest {
+        let uuid: UUID
+        let url: URL
+        let bearerToken: String
+    }
+
+    // Lazy so the provider is constructed with the most recent
+    // CallKitController.providerConfiguration — which Dart populates via
+    // updateConfig (ringtone, icon) AFTER plugin load but BEFORE the first
+    // reportIncomingCall. Eager init at plugin-load time happened before
+    // Dart ran, so the provider snapshotted the default config and the
+    // ringtoneSound was never applied (CallKit silently fell back to
+    // system defaults). Lazy lets the first ring use the right asset.
+    private lazy var provider: CXProvider = {
+        let p = CXProvider(configuration: CallKitController.providerConfiguration)
+        p.setDelegate(self, queue: nil)
+        return p
+    }()
     private let callController : CXCallController
     var actionListener : ((CallEvent, UUID, [String:Any]?)->Void)?
     var currentCallData: [String: Any] = [:]
     private var callStates: [String:CallState] = [:]
     private var callsData: [String:[String:Any]] = [:]
-    
+    private var pendingAnswerCallUUID: UUID?
+    private var callAudioSessionActivated = false
+    private var pendingReportAcceptedCompletions: [() -> Void] = []
+    private var pendingCallAudioRequest: CallAudioRequest?
+    private var activeCallAudioUUID: UUID?
+    private var callAudioPlayer: AVAudioPlayer?
+    private var callAudioDownloadTask: URLSessionDataTask?
+
     override init() {
-        self.provider = CXProvider(configuration: CallKitController.providerConfiguration)
         self.callController = CXCallController()
-        
         super.init()
-        self.provider.setDelegate(self, queue: nil)
     }
     
     //TODO: construct configuration from flutter. pass into init over method channel
@@ -65,26 +87,46 @@ class CallKitController : NSObject {
         providerConfiguration.supportedHandleTypes = [.generic]
         
         if #available(iOS 11.0, *) {
-            providerConfiguration.includesCallsInRecents = false
+            // Surface our calls in the iOS Phone app's Recents tab. Hosts that
+            // don't want this can flip via updateConfig(includesInRecents:).
+            providerConfiguration.includesCallsInRecents = true
         }
-        
+
         return providerConfiguration
     }()
-    
+
     static func updateConfig(
         ringtone: String?,
-        icon: String?
-        
+        icon: String?,
+        includesInRecents: Bool? = nil
     ) {
         if(ringtone != nil){
             providerConfiguration.ringtoneSound = ringtone
         }
-        
+
         if(icon != nil){
             let iconImage = UIImage(named: icon!)
             let iconData = iconImage?.pngData()
-            
+
             providerConfiguration.iconTemplateImageData = iconData
+        }
+
+        if #available(iOS 11.0, *), let inRecents = includesInRecents {
+            providerConfiguration.includesCallsInRecents = inRecents
+        }
+    }
+
+    /// Push the static `providerConfiguration` onto the live CXProvider.
+    /// CXProvider snapshots its configuration at init, so calling
+    /// `updateConfig(...)` alone doesn't take effect — the ringtone, icon,
+    /// or recents toggle wouldn't apply until next app launch otherwise.
+    /// Reassigning `provider.configuration` here is the documented way to
+    /// hot-swap CallKit config (iOS 14+ supports the setter directly;
+    /// earlier versions discard the change but the in-memory provider was
+    /// already configured at construction, so it's effectively a no-op).
+    func refreshProviderConfiguration() {
+        if #available(iOS 14.0, *) {
+            self.provider.configuration = CallKitController.providerConfiguration
         }
     }
     
@@ -115,7 +157,9 @@ class CallKitController : NSObject {
                 completion?(error)
                 
                 if(error == nil){
-                    self.configureAudioSession(active: true)
+                    self.stopCallAudio()
+                    self.callAudioSessionActivated = false
+                    self.configureAudioSession(active: false)
                     
                     self.currentCallData["session_id"] = uuid
                     self.currentCallData["call_type"] = callType
@@ -195,25 +239,200 @@ class CallKitController : NSObject {
         NotificationCenter.default.post(name: AVAudioSession.interruptionNotification, object: self, userInfo: userInfo)
     }
     
-    func configureAudioSession(active: Bool){
+    func configureAudioSession(
+        _ audioSession: AVAudioSession = AVAudioSession.sharedInstance(),
+        active: Bool
+    ){
         print("[CallKitController][configureAudioSession] active: \(active)")
-        
-        let audioSession = AVAudioSession.sharedInstance()
-        
+
         do {
             try audioSession.setCategory(
-                AVAudioSession.Category.playAndRecord,
+                .playAndRecord,
+                mode: .voiceChat,
                 options: [
+                    .defaultToSpeaker,
                     .allowBluetooth,
                     .allowBluetoothA2DP,
                 ])
-            try audioSession.setMode(AVAudioSession.Mode.videoChat)
             try audioSession.setPreferredSampleRate(44100.0)
             try audioSession.setPreferredIOBufferDuration(0.005)
-            try audioSession.setActive(active)
+            if active {
+                try audioSession.setActive(true)
+            }
         } catch {
             print(error)
         }
+    }
+
+    private func emitPendingAnswerCallIfNeeded() {
+        guard let callUUID = pendingAnswerCallUUID else {
+            return
+        }
+
+        pendingAnswerCallUUID = nil
+        let callId = callUUID.uuidString.lowercased()
+        actionListener?(.answerCall, callUUID, callsData[callId] ?? currentCallData)
+    }
+
+    private func completePendingReportAcceptedIfNeeded() {
+        let completions = pendingReportAcceptedCompletions
+        pendingReportAcceptedCompletions.removeAll()
+        completions.forEach { $0() }
+    }
+
+    func playCallAudio(uuid: String, url: String, bearerToken: String) throws {
+        guard let callUUID = UUID(uuidString: uuid) else {
+            throw NSError(
+                domain: "CallKitController",
+                code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "Invalid CallKit UUID: \(uuid)"]
+            )
+        }
+
+        guard let audioURL = URL(string: url) else {
+            throw NSError(
+                domain: "CallKitController",
+                code: 2,
+                userInfo: [NSLocalizedDescriptionKey: "Invalid call audio URL: \(url)"]
+            )
+        }
+
+        let request = CallAudioRequest(
+            uuid: callUUID,
+            url: audioURL,
+            bearerToken: bearerToken
+        )
+
+        stopCallAudio()
+        pendingCallAudioRequest = request
+        startPendingCallAudioIfPossible()
+    }
+
+    private func startPendingCallAudioIfPossible() {
+        guard callAudioSessionActivated, let request = pendingCallAudioRequest else {
+            return
+        }
+
+        pendingCallAudioRequest = nil
+        activeCallAudioUUID = request.uuid
+
+        var urlRequest = URLRequest(url: request.url)
+        urlRequest.setValue("Bearer \(request.bearerToken)", forHTTPHeaderField: "Authorization")
+        urlRequest.cachePolicy = .reloadIgnoringLocalCacheData
+        urlRequest.timeoutInterval = 30
+
+        print("[CallKitController][playCallAudio] downloading: \(request.url)")
+        callAudioDownloadTask = URLSession.shared.dataTask(with: urlRequest) { [weak self] data, response, error in
+            DispatchQueue.main.async {
+                self?.handleCallAudioDownload(
+                    request: request,
+                    data: data,
+                    response: response,
+                    error: error
+                )
+            }
+        }
+        callAudioDownloadTask?.resume()
+    }
+
+    private func handleCallAudioDownload(
+        request: CallAudioRequest,
+        data: Data?,
+        response: URLResponse?,
+        error: Error?
+    ) {
+        callAudioDownloadTask = nil
+
+        guard activeCallAudioUUID == request.uuid else {
+            print("[CallKitController][playCallAudio] ignoring stale audio response")
+            return
+        }
+
+        if let error = error as NSError?, error.code == NSURLErrorCancelled {
+            return
+        }
+
+        if let error = error {
+            activeCallAudioUUID = nil
+            print("[CallKitController][playCallAudio] download failed: \(error)")
+            return
+        }
+
+        if let httpResponse = response as? HTTPURLResponse,
+           !(200...299).contains(httpResponse.statusCode) {
+            activeCallAudioUUID = nil
+            print("[CallKitController][playCallAudio] bad HTTP status: \(httpResponse.statusCode)")
+            return
+        }
+
+        guard let data = data, !data.isEmpty else {
+            activeCallAudioUUID = nil
+            print("[CallKitController][playCallAudio] empty audio response")
+            return
+        }
+
+        do {
+            let audioSession = AVAudioSession.sharedInstance()
+            configureAudioSession(audioSession, active: false)
+            try audioSession.overrideOutputAudioPort(.speaker)
+
+            let player = try AVAudioPlayer(data: data)
+            player.delegate = self
+            player.prepareToPlay()
+            callAudioPlayer = player
+
+            if player.play() {
+                print("[CallKitController][playCallAudio] playback started")
+            } else {
+                activeCallAudioUUID = nil
+                callAudioPlayer = nil
+                print("[CallKitController][playCallAudio] playback did not start")
+            }
+        } catch {
+            activeCallAudioUUID = nil
+            callAudioPlayer = nil
+            print("[CallKitController][playCallAudio] playback failed: \(error)")
+        }
+    }
+
+    private func stopCallAudio(clearPending: Bool = true) {
+        callAudioDownloadTask?.cancel()
+        callAudioDownloadTask = nil
+        callAudioPlayer?.stop()
+        callAudioPlayer = nil
+        activeCallAudioUUID = nil
+
+        if clearPending {
+            pendingCallAudioRequest = nil
+        }
+    }
+
+    func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
+        guard player === callAudioPlayer else {
+            return
+        }
+
+        let callUUID = activeCallAudioUUID
+        callAudioPlayer = nil
+        activeCallAudioUUID = nil
+
+        guard let callUUID = callUUID else {
+            return
+        }
+
+        print("[CallKitController][playCallAudio] playback finished successfully: \(flag)")
+        end(uuid: callUUID)
+        clearCallData(uuid: callUUID.uuidString.lowercased())
+    }
+
+    func audioPlayerDecodeErrorDidOccur(_ player: AVAudioPlayer, error: Error?) {
+        guard player === callAudioPlayer else {
+            return
+        }
+
+        print("[CallKitController][playCallAudio] decode error: \(String(describing: error))")
+        callAudioPlayer = nil
+        activeCallAudioUUID = nil
     }
 }
 
@@ -277,8 +496,21 @@ extension CallKitController {
         requestTransaction(transaction);
     }
     
-    func answerCall(uuid: String) {
+    func answerCall(uuid: String, completion: (() -> Void)? = nil) {
         print("[CallKitController][answerCall] uuid: \(uuid)")
+
+        if let completion = completion {
+            if self.callStates[uuid.lowercased()] == .accepted && callAudioSessionActivated {
+                completion()
+            } else {
+                pendingReportAcceptedCompletions.append(completion)
+            }
+        }
+
+        if self.callStates[uuid.lowercased()] == .accepted {
+            print("[CallKitController][answerCall] already accepted: \(uuid)")
+            return
+        }
         
         let callUUID = UUID(uuidString: uuid)
         let answerCallAction = CXAnswerCallAction(call: callUUID!)
@@ -293,34 +525,61 @@ extension CallKitController {
 //MARK: System notifications
 extension CallKitController: CXProviderDelegate {
     func providerDidReset(_ provider: CXProvider) {
-        
+        pendingAnswerCallUUID = nil
+        callAudioSessionActivated = false
+        stopCallAudio()
+        completePendingReportAcceptedIfNeeded()
     }
     
     func provider(_ provider: CXProvider, perform action: CXAnswerCallAction) {
         print("[CallKitController][CXAnswerCallAction] callUUID: \(action.callUUID.uuidString.lowercased())")
         
-        configureAudioSession(active: true)
+        configureAudioSession(active: false)
+        pendingAnswerCallUUID = action.callUUID
         callStates[action.callUUID.uuidString.lowercased()] = .accepted
-        actionListener?(.answerCall, action.callUUID, self.currentCallData)
         
         action.fulfill()
     }
     
     func provider(_ provider: CXProvider, didActivate audioSession: AVAudioSession) {
         print("[CallKitController] Audio session activated")
-        
+
+        // CallKit has already activated the session for us — calling
+        // setActive(true) again was a no-op AND the existing config
+        // (.playAndRecord + .videoChat without .defaultToSpeaker) routed
+        // audio to the earpiece, making any media playback during the
+        // call effectively silent on the loudspeaker.
+        //
+        // Reconfigure for spoken-reminder playback: keep .playAndRecord
+        // (CallKit requires the session stay valid for a voice call) and use
+        // .voiceChat + .defaultToSpeaker so native reminder audio is audible.
+        configureAudioSession(audioSession, active: false)
+        do {
+            try audioSession.overrideOutputAudioPort(.speaker)
+        } catch {
+            print("[CallKitController] failed to force speaker route: \(error)")
+        }
+        callAudioSessionActivated = true
         sendAudioInterruptionNotification()
-        configureAudioSession(active: true)
+        completePendingReportAcceptedIfNeeded()
+        emitPendingAnswerCallIfNeeded()
+        startPendingCallAudioIfPossible()
     }
     
     func provider(_ provider: CXProvider, didDeactivate audioSession: AVAudioSession) {
         print("[CallKitController] Audio session deactivated")
+        callAudioSessionActivated = false
+        stopCallAudio(clearPending: false)
     }
     
     func provider(_ provider: CXProvider, perform action: CXEndCallAction) {
         print("[CallKitController][CXEndCallAction]")
         
         actionListener?(.endCall, action.callUUID, currentCallData)
+        pendingAnswerCallUUID = nil
+        callAudioSessionActivated = false
+        stopCallAudio()
+        completePendingReportAcceptedIfNeeded()
         callStates[action.callUUID.uuidString.lowercased()] = .rejected
         
         action.fulfill()
@@ -351,7 +610,7 @@ extension CallKitController: CXProviderDelegate {
         
         actionListener?(.startCall, action.callUUID, currentCallData)
         callStates[action.callUUID.uuidString.lowercased()] = .accepted
-        configureAudioSession(active: true)
+        configureAudioSession(active: false)
         
         action.fulfill()
     }
