@@ -78,8 +78,14 @@ public class SwiftConnectycubeFlutterCallKitPlugin: NSObject, FlutterPlugin {
             }
             let ringtone = arguments["ringtone"] as? String
             let icon = arguments["icon"] as? String
-            CallKitController.updateConfig(ringtone: ringtone, icon: icon)
-            
+            let includesInRecents = arguments["includesInRecents"] as? Bool
+            CallKitController.updateConfig(ringtone: ringtone, icon: icon, includesInRecents: includesInRecents)
+            // Push the new config onto the live CXProvider — without this,
+            // CallKit keeps using the configuration captured at provider
+            // init time and the ringtone/icon/recents toggle never takes
+            // effect until app restart.
+            SwiftConnectycubeFlutterCallKitPlugin.callController.refreshProviderConfiguration()
+
             result(true)
         }
         else if call.method == "showCallNotification" {

@@ -65,26 +65,46 @@ class CallKitController : NSObject {
         providerConfiguration.supportedHandleTypes = [.generic]
         
         if #available(iOS 11.0, *) {
-            providerConfiguration.includesCallsInRecents = false
+            // Surface our calls in the iOS Phone app's Recents tab. Hosts that
+            // don't want this can flip via updateConfig(includesInRecents:).
+            providerConfiguration.includesCallsInRecents = true
         }
-        
+
         return providerConfiguration
     }()
-    
+
     static func updateConfig(
         ringtone: String?,
-        icon: String?
-        
+        icon: String?,
+        includesInRecents: Bool? = nil
     ) {
         if(ringtone != nil){
             providerConfiguration.ringtoneSound = ringtone
         }
-        
+
         if(icon != nil){
             let iconImage = UIImage(named: icon!)
             let iconData = iconImage?.pngData()
-            
+
             providerConfiguration.iconTemplateImageData = iconData
+        }
+
+        if #available(iOS 11.0, *), let inRecents = includesInRecents {
+            providerConfiguration.includesCallsInRecents = inRecents
+        }
+    }
+
+    /// Push the static `providerConfiguration` onto the live CXProvider.
+    /// CXProvider snapshots its configuration at init, so calling
+    /// `updateConfig(...)` alone doesn't take effect — the ringtone, icon,
+    /// or recents toggle wouldn't apply until next app launch otherwise.
+    /// Reassigning `provider.configuration` here is the documented way to
+    /// hot-swap CallKit config (iOS 14+ supports the setter directly;
+    /// earlier versions discard the change but the in-memory provider was
+    /// already configured at construction, so it's effectively a no-op).
+    func refreshProviderConfiguration() {
+        if #available(iOS 14.0, *) {
+            self.provider.configuration = CallKitController.providerConfiguration
         }
     }
     
