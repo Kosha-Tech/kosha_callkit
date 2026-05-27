@@ -113,8 +113,9 @@ public class SwiftConnectycubeFlutterCallKitPlugin: NSObject, FlutterPlugin {
                 return
             }
             
-            SwiftConnectycubeFlutterCallKitPlugin.callController.answerCall(uuid: callId)
-            result(true)
+            SwiftConnectycubeFlutterCallKitPlugin.callController.answerCall(uuid: callId) {
+                result(true)
+            }
         }
         else if call.method == "reportCallFinished" {
             guard let arguments = arguments else {

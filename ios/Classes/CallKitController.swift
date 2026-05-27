@@ -8,6 +8,7 @@
 import Foundation
 import AVFoundation
 import CallKit
+import UIKit
 
 enum CallEvent : String {
     case incomingCall = "incomingCall"
@@ -51,6 +52,9 @@ class CallKitController : NSObject {
     var currentCallData: [String: Any] = [:]
     private var callStates: [String:CallState] = [:]
     private var callsData: [String:[String:Any]] = [:]
+    private var pendingAnswerCallUUID: UUID?
+    private var callAudioSessionActivated = false
+    private var pendingReportAcceptedCompletions: [() -> Void] = []
 
     override init() {
         self.callController = CXCallController()
@@ -143,7 +147,8 @@ class CallKitController : NSObject {
                 completion?(error)
                 
                 if(error == nil){
-                    self.configureAudioSession(active: true)
+                    self.callAudioSessionActivated = false
+                    self.configureAudioSession(active: false)
                     
                     self.currentCallData["session_id"] = uuid
                     self.currentCallData["call_type"] = callType
@@ -223,25 +228,45 @@ class CallKitController : NSObject {
         NotificationCenter.default.post(name: AVAudioSession.interruptionNotification, object: self, userInfo: userInfo)
     }
     
-    func configureAudioSession(active: Bool){
+    func configureAudioSession(
+        _ audioSession: AVAudioSession = AVAudioSession.sharedInstance(),
+        active: Bool
+    ){
         print("[CallKitController][configureAudioSession] active: \(active)")
-        
-        let audioSession = AVAudioSession.sharedInstance()
-        
+
         do {
             try audioSession.setCategory(
-                AVAudioSession.Category.playAndRecord,
+                .playAndRecord,
+                mode: .spokenAudio,
                 options: [
+                    .defaultToSpeaker,
                     .allowBluetooth,
                     .allowBluetoothA2DP,
                 ])
-            try audioSession.setMode(AVAudioSession.Mode.videoChat)
             try audioSession.setPreferredSampleRate(44100.0)
             try audioSession.setPreferredIOBufferDuration(0.005)
-            try audioSession.setActive(active)
+            if active {
+                try audioSession.setActive(true)
+            }
         } catch {
             print(error)
         }
+    }
+
+    private func emitPendingAnswerCallIfNeeded() {
+        guard let callUUID = pendingAnswerCallUUID else {
+            return
+        }
+
+        pendingAnswerCallUUID = nil
+        let callId = callUUID.uuidString.lowercased()
+        actionListener?(.answerCall, callUUID, callsData[callId] ?? currentCallData)
+    }
+
+    private func completePendingReportAcceptedIfNeeded() {
+        let completions = pendingReportAcceptedCompletions
+        pendingReportAcceptedCompletions.removeAll()
+        completions.forEach { $0() }
     }
 }
 
@@ -305,8 +330,21 @@ extension CallKitController {
         requestTransaction(transaction);
     }
     
-    func answerCall(uuid: String) {
+    func answerCall(uuid: String, completion: (() -> Void)? = nil) {
         print("[CallKitController][answerCall] uuid: \(uuid)")
+
+        if let completion = completion {
+            if self.callStates[uuid.lowercased()] == .accepted && callAudioSessionActivated {
+                completion()
+            } else {
+                pendingReportAcceptedCompletions.append(completion)
+            }
+        }
+
+        if self.callStates[uuid.lowercased()] == .accepted {
+            print("[CallKitController][answerCall] already accepted: \(uuid)")
+            return
+        }
         
         let callUUID = UUID(uuidString: uuid)
         let answerCallAction = CXAnswerCallAction(call: callUUID!)
@@ -321,15 +359,17 @@ extension CallKitController {
 //MARK: System notifications
 extension CallKitController: CXProviderDelegate {
     func providerDidReset(_ provider: CXProvider) {
-        
+        pendingAnswerCallUUID = nil
+        callAudioSessionActivated = false
+        completePendingReportAcceptedIfNeeded()
     }
     
     func provider(_ provider: CXProvider, perform action: CXAnswerCallAction) {
         print("[CallKitController][CXAnswerCallAction] callUUID: \(action.callUUID.uuidString.lowercased())")
         
-        configureAudioSession(active: true)
+        configureAudioSession(active: false)
+        pendingAnswerCallUUID = action.callUUID
         callStates[action.callUUID.uuidString.lowercased()] = .accepted
-        actionListener?(.answerCall, action.callUUID, self.currentCallData)
         
         action.fulfill()
     }
@@ -347,33 +387,25 @@ extension CallKitController: CXProviderDelegate {
         // (CallKit requires the session stay valid for a voice call) but
         // switch to .spokenAudio mode and force .defaultToSpeaker so the
         // host app's AVPlayer (just_audio in our case) is audible.
-        do {
-            try audioSession.setCategory(
-                .playAndRecord,
-                mode: .spokenAudio,
-                options: [
-                    .defaultToSpeaker,
-                    .allowBluetooth,
-                    .allowBluetoothA2DP,
-                ]
-            )
-            try audioSession.setPreferredSampleRate(44100.0)
-            try audioSession.setPreferredIOBufferDuration(0.005)
-        } catch {
-            print("[CallKitController] failed to reconfigure audio session for spoken playback: \(error)")
-        }
-
+        configureAudioSession(audioSession, active: false)
+        callAudioSessionActivated = true
         sendAudioInterruptionNotification()
+        completePendingReportAcceptedIfNeeded()
+        emitPendingAnswerCallIfNeeded()
     }
     
     func provider(_ provider: CXProvider, didDeactivate audioSession: AVAudioSession) {
         print("[CallKitController] Audio session deactivated")
+        callAudioSessionActivated = false
     }
     
     func provider(_ provider: CXProvider, perform action: CXEndCallAction) {
         print("[CallKitController][CXEndCallAction]")
         
         actionListener?(.endCall, action.callUUID, currentCallData)
+        pendingAnswerCallUUID = nil
+        callAudioSessionActivated = false
+        completePendingReportAcceptedIfNeeded()
         callStates[action.callUUID.uuidString.lowercased()] = .rejected
         
         action.fulfill()
@@ -404,7 +436,7 @@ extension CallKitController: CXProviderDelegate {
         
         actionListener?(.startCall, action.callUUID, currentCallData)
         callStates[action.callUUID.uuidString.lowercased()] = .accepted
-        configureAudioSession(active: true)
+        configureAudioSession(active: false)
         
         action.fulfill()
     }
