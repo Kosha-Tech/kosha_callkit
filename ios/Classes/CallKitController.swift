@@ -336,9 +336,34 @@ extension CallKitController: CXProviderDelegate {
     
     func provider(_ provider: CXProvider, didActivate audioSession: AVAudioSession) {
         print("[CallKitController] Audio session activated")
-        
+
+        // CallKit has already activated the session for us — calling
+        // setActive(true) again was a no-op AND the existing config
+        // (.playAndRecord + .videoChat without .defaultToSpeaker) routed
+        // audio to the earpiece, making any media playback during the
+        // call effectively silent on the loudspeaker.
+        //
+        // Reconfigure for spoken-reminder playback: keep .playAndRecord
+        // (CallKit requires the session stay valid for a voice call) but
+        // switch to .spokenAudio mode and force .defaultToSpeaker so the
+        // host app's AVPlayer (just_audio in our case) is audible.
+        do {
+            try audioSession.setCategory(
+                .playAndRecord,
+                mode: .spokenAudio,
+                options: [
+                    .defaultToSpeaker,
+                    .allowBluetooth,
+                    .allowBluetoothA2DP,
+                ]
+            )
+            try audioSession.setPreferredSampleRate(44100.0)
+            try audioSession.setPreferredIOBufferDuration(0.005)
+        } catch {
+            print("[CallKitController] failed to reconfigure audio session for spoken playback: \(error)")
+        }
+
         sendAudioInterruptionNotification()
-        configureAudioSession(active: true)
     }
     
     func provider(_ provider: CXProvider, didDeactivate audioSession: AVAudioSession) {
