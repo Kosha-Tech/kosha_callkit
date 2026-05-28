@@ -229,6 +229,19 @@ class ConnectycubeFlutterCallKit {
     });
   }
 
+  /// Toggle the call audio route to the loud speaker (true) or back to
+  /// the receiver / system default (false). iOS-only; Android hosts that
+  /// own their own call surface should manage routing natively.
+  ///
+  /// Uses AVAudioSession.overrideOutputAudioPort under the hood, applied
+  /// against the active CallKit session.
+  static Future<void> setSpeaker(bool on) async {
+    if (!Platform.isIOS) return Future.value();
+    return _methodChannel.invokeMethod("setSpeaker", {
+      'on': on,
+    });
+  }
+
   /// Get the current call state
   ///
   /// Other platforms than Android and iOS will receive [CallState.UNKNOWN]
