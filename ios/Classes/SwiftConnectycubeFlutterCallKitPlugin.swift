@@ -158,6 +158,15 @@ public class SwiftConnectycubeFlutterCallKitPlugin: NSObject, FlutterPlugin {
             SwiftConnectycubeFlutterCallKitPlugin.callController.end(uuid: UUID(uuidString: callId)!)
             result(true)
         }
+        else if call.method == "setSpeaker" {
+            guard let arguments = arguments else {
+                result(FlutterError(code: "invalid_argument", message: "No data was provided.", details: nil))
+                return
+            }
+            let on = arguments["on"] as? Bool ?? false
+            SwiftConnectycubeFlutterCallKitPlugin.callController.setSpeaker(on: on)
+            result(true)
+        }
         else if call.method == "muteCall" {
             guard let arguments = arguments else {
                 result(FlutterError(code: "invalid_argument", message: "No data was provided.", details: nil))

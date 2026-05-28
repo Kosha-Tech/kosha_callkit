@@ -473,12 +473,26 @@ extension CallKitController {
     
     func setMute(uuid: UUID, muted: Bool){
         print("[CallKitController][setMute] uuid: \(uuid.uuidString.lowercased()), muted: \(muted)")
-        
+
         let muteCallAction = CXSetMutedCallAction(call: uuid, muted: muted);
         let transaction = CXTransaction()
         transaction.addAction(muteCallAction)
-        
+
         requestTransaction(transaction)
+    }
+
+    /// Route the active CallKit session's audio to the loud speaker
+    /// (true) or back to the system default route, typically the receiver
+    /// (false). Applied to AVAudioSession via overrideOutputAudioPort —
+    /// only meaningful while CallKit owns the active session.
+    func setSpeaker(on: Bool) {
+        print("[CallKitController][setSpeaker] on: \(on)")
+        let audioSession = AVAudioSession.sharedInstance()
+        do {
+            try audioSession.overrideOutputAudioPort(on ? .speaker : .none)
+        } catch {
+            print("[CallKitController][setSpeaker] failed to override audio port: \(error)")
+        }
     }
     
     func startCall(handle: String, videoEnabled: Bool, uuid: String? = nil) {
