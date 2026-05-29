@@ -246,11 +246,21 @@ class CallKitController : NSObject, AVAudioPlayerDelegate {
         print("[CallKitController][configureAudioSession] active: \(active)")
 
         do {
+            // Use .default mode (not .voiceChat) so playback isn't capped at
+            // call-volume levels — the spoken reminder needs to be audible
+            // across the room. CallKit still requires .playAndRecord for the
+            // active call session, so we keep that.
+            //
+            // No .defaultToSpeaker: when the option is set, overrideOutput
+            // AudioPort(.none) just falls back to the default (speaker), so
+            // the user's Speaker toggle becomes a no-op. We instead force
+            // speaker explicitly in provider(didActivate:) so the initial
+            // route matches phone-call UX, while leaving the toggle free to
+            // swap between speaker and earpiece.
             try audioSession.setCategory(
                 .playAndRecord,
-                mode: .voiceChat,
+                mode: .default,
                 options: [
-                    .defaultToSpeaker,
                     .allowBluetooth,
                     .allowBluetoothA2DP,
                 ])
@@ -373,11 +383,26 @@ class CallKitController : NSObject, AVAudioPlayerDelegate {
 
         do {
             let audioSession = AVAudioSession.sharedInstance()
-            configureAudioSession(audioSession, active: false)
-            try audioSession.overrideOutputAudioPort(.speaker)
+            // Switch the session to `.playback` for the spoken-reminder
+            // segment. `.playAndRecord` routes audio through the call-volume
+            // curve, which is often much quieter than media volume even when
+            // forced to speaker. `.playback` routes to speaker by default when
+            // no headphones/Bluetooth route is active.
+            try audioSession.setCategory(
+                .playback,
+                mode: .default,
+                options: [.duckOthers]
+            )
+            try audioSession.setActive(true)
 
             let player = try AVAudioPlayer(data: data)
             player.delegate = self
+            // Play the spoken reminder three times. AVAudioPlayer.numberOfLoops
+            // counts additional loops after the first play, so 2 = 3 total
+            // plays. We repeat because a one-shot ~6s clip is easy for the
+            // user to miss if they were still picking up the phone.
+            player.numberOfLoops = 2
+            player.volume = 1.0
             player.prepareToPlay()
             callAudioPlayer = player
 
@@ -558,15 +583,10 @@ extension CallKitController: CXProviderDelegate {
     func provider(_ provider: CXProvider, didActivate audioSession: AVAudioSession) {
         print("[CallKitController] Audio session activated")
 
-        // CallKit has already activated the session for us — calling
-        // setActive(true) again was a no-op AND the existing config
-        // (.playAndRecord + .videoChat without .defaultToSpeaker) routed
-        // audio to the earpiece, making any media playback during the
-        // call effectively silent on the loudspeaker.
-        //
-        // Reconfigure for spoken-reminder playback: keep .playAndRecord
-        // (CallKit requires the session stay valid for a voice call) and use
-        // .voiceChat + .defaultToSpeaker so native reminder audio is audible.
+        // CallKit has already activated the session for us. Keep a valid
+        // .playAndRecord session while waiting for the audio clip, but force
+        // the initial route to speaker; the clip itself switches to .playback
+        // in handleCallAudioDownload so it uses media volume.
         configureAudioSession(audioSession, active: false)
         do {
             try audioSession.overrideOutputAudioPort(.speaker)
