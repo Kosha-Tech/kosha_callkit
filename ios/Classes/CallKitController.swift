@@ -72,32 +72,43 @@ class CallKitController : NSObject, AVAudioPlayerDelegate {
     }
     
     //TODO: construct configuration from flutter. pass into init over method channel
-    static var providerConfiguration: CXProviderConfiguration = {
-        let appName = Bundle.main.infoDictionary?[kCFBundleNameKey as String] as! String
-        var providerConfiguration: CXProviderConfiguration
-        if #available(iOS 14.0, *) {
-            providerConfiguration = CXProviderConfiguration.init()
-            // localizedName is shown as the call's source label under the
-            // caller name on the CallKit screen. Defaults to the app name;
-            // hosts can override it via updateConfig(localizedName:).
-            providerConfiguration.localizedName = appName
-        } else {
-            providerConfiguration = CXProviderConfiguration(localizedName: appName)
-        }
-        
-        providerConfiguration.supportsVideo = true
-        providerConfiguration.maximumCallsPerCallGroup = 1
-        providerConfiguration.maximumCallGroups = 1;
-        providerConfiguration.supportedHandleTypes = [.generic]
-        
-        if #available(iOS 11.0, *) {
-            // Surface our calls in the iOS Phone app's Recents tab. Hosts that
-            // don't want this can flip via updateConfig(includesInRecents:).
-            providerConfiguration.includesCallsInRecents = true
-        }
 
-        return providerConfiguration
-    }()
+    // Current config values. `localizedName` is the call's source label shown
+    // under the caller name on the CallKit screen; it's get-only after init on
+    // every iOS version (the property has no setter), so the only way to change
+    // it is to rebuild the whole configuration via init(localizedName:).
+    // Defaults to the app name; hosts override via updateConfig(localizedName:).
+    private static var cfgLocalizedName: String =
+        (Bundle.main.infoDictionary?[kCFBundleNameKey as String] as? String) ?? "App"
+    private static var cfgRingtone: String?
+    private static var cfgIcon: String?
+    private static var cfgIncludesInRecents: Bool = true
+
+    static var providerConfiguration: CXProviderConfiguration = buildProviderConfiguration()
+
+    /// Build a fresh CXProviderConfiguration from the current `cfg*` values.
+    /// init(localizedName:) is deprecated on iOS 14+ but remains the only way
+    /// to set localizedName, so we keep using it and rebuild on change.
+    private static func buildProviderConfiguration() -> CXProviderConfiguration {
+        let config = CXProviderConfiguration(localizedName: cfgLocalizedName)
+        config.supportsVideo = true
+        config.maximumCallsPerCallGroup = 1
+        config.maximumCallGroups = 1
+        config.supportedHandleTypes = [.generic]
+
+        if let ringtone = cfgRingtone {
+            config.ringtoneSound = ringtone
+        }
+        if let icon = cfgIcon, let iconData = UIImage(named: icon)?.pngData() {
+            config.iconTemplateImageData = iconData
+        }
+        if #available(iOS 11.0, *) {
+            // Surface our calls in the iOS Phone app's Recents tab. Hosts can
+            // flip this via updateConfig(includesInRecents:).
+            config.includesCallsInRecents = cfgIncludesInRecents
+        }
+        return config
+    }
 
     static func updateConfig(
         ringtone: String?,
@@ -105,26 +116,13 @@ class CallKitController : NSObject, AVAudioPlayerDelegate {
         includesInRecents: Bool? = nil,
         localizedName: String? = nil
     ) {
-        if(ringtone != nil){
-            providerConfiguration.ringtoneSound = ringtone
-        }
+        if let ringtone = ringtone { cfgRingtone = ringtone }
+        if let icon = icon { cfgIcon = icon }
+        if let includesInRecents = includesInRecents { cfgIncludesInRecents = includesInRecents }
+        if let name = localizedName, !name.isEmpty { cfgLocalizedName = name }
 
-        // localizedName is only mutable on the iOS 14+ CXProviderConfiguration;
-        // on earlier OS it's fixed at init time (to the app name).
-        if #available(iOS 14.0, *), let name = localizedName, !name.isEmpty {
-            providerConfiguration.localizedName = name
-        }
-
-        if(icon != nil){
-            let iconImage = UIImage(named: icon!)
-            let iconData = iconImage?.pngData()
-
-            providerConfiguration.iconTemplateImageData = iconData
-        }
-
-        if #available(iOS 11.0, *), let inRecents = includesInRecents {
-            providerConfiguration.includesCallsInRecents = inRecents
-        }
+        // localizedName can't be mutated in place — rebuild the whole config.
+        providerConfiguration = buildProviderConfiguration()
     }
 
     /// Push the static `providerConfiguration` onto the live CXProvider.
