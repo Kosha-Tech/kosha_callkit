@@ -1,0 +1,22 @@
+PODS:
+  - Flutter (1.0.0)
+  - kosha_callkit (2.8.2):
+    - Flutter
+
+DEPENDENCIES:
+  - Flutter (from `Flutter`)
+  - kosha_callkit (from `.symlinks/plugins/kosha_callkit/ios`)
+
+EXTERNAL SOURCES:
+  Flutter:
+    :path: Flutter
+  kosha_callkit:
+    :path: ".symlinks/plugins/kosha_callkit/ios"
+
+SPEC CHECKSUMS:
+  Flutter: cabc95a1d2626b1b06e7179b784ebcf0c0cde467
+  kosha_callkit: 055d489f6c2e3b0a05d421fc80ef60beddebf6b9
+
+PODFILE CHECKSUM: 3c63482e143d1b91d2d2560aee9fb04ecc74ac7e
+
+COCOAPODS: 1.16.2

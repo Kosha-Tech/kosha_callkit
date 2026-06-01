@@ -1,0 +1,71 @@
+name: ci
+
+# Compiles the plugin's native iOS (Swift) and Android (Kotlin) code on every
+# PR / push to main, so breakages surface here instead of in a consuming app's
+# Xcode Cloud / Gradle build. The example app under example/ exists only to
+# give the native code something to link against.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  FLUTTER_VERSION: "3.41.9"
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+      - run: flutter pub get
+      # --no-fatal-warnings: fail on Dart errors, not pre-existing lints.
+      - run: flutter analyze --no-fatal-warnings
+      - name: Analyze example
+        working-directory: example
+        run: |
+          flutter pub get
+          flutter analyze --no-fatal-warnings
+
+  ios-build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+      - name: Build example (iOS, no codesign)
+        working-directory: example
+        run: |
+          flutter pub get
+          flutter build ios --no-codesign --debug
+
+  android-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+      - name: Build example (Android)
+        working-directory: example
+        run: |
+          flutter pub get
+          flutter build apk --debug
