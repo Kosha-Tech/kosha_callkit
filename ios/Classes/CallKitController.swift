@@ -77,6 +77,10 @@ class CallKitController : NSObject, AVAudioPlayerDelegate {
         var providerConfiguration: CXProviderConfiguration
         if #available(iOS 14.0, *) {
             providerConfiguration = CXProviderConfiguration.init()
+            // localizedName is shown as the call's source label under the
+            // caller name on the CallKit screen. Defaults to the app name;
+            // hosts can override it via updateConfig(localizedName:).
+            providerConfiguration.localizedName = appName
         } else {
             providerConfiguration = CXProviderConfiguration(localizedName: appName)
         }
@@ -98,10 +102,17 @@ class CallKitController : NSObject, AVAudioPlayerDelegate {
     static func updateConfig(
         ringtone: String?,
         icon: String?,
-        includesInRecents: Bool? = nil
+        includesInRecents: Bool? = nil,
+        localizedName: String? = nil
     ) {
         if(ringtone != nil){
             providerConfiguration.ringtoneSound = ringtone
+        }
+
+        // localizedName is only mutable on the iOS 14+ CXProviderConfiguration;
+        // on earlier OS it's fixed at init time (to the app name).
+        if #available(iOS 14.0, *), let name = localizedName, !name.isEmpty {
+            providerConfiguration.localizedName = name
         }
 
         if(icon != nil){

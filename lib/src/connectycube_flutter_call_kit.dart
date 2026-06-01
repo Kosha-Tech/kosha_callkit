@@ -66,7 +66,8 @@ class ConnectycubeFlutterCallKit {
       String? icon,
       @Deprecated('Use `AndroidManifest.xml` meta-data instead')
       String? notificationIcon,
-      String? color}) {
+      String? color,
+      String? localizedName}) {
     _onCallAccepted = onCallAccepted;
     _onCallRejected = onCallRejected;
     _onCallIncoming = onCallIncoming;
@@ -75,7 +76,8 @@ class ConnectycubeFlutterCallKit {
         ringtone: ringtone,
         icon: icon,
         notificationIcon: notificationIcon,
-        color: color);
+        color: color,
+        localizedName: localizedName);
 
     initEventsHandler();
   }
@@ -159,12 +161,16 @@ class ConnectycubeFlutterCallKit {
   /// [icon] - the name of image in the `drawable` folder for Android and the name of Assests set for iOS
   /// [notificationIcon] - the name of the image in the `drawable` folder, uses as Notification Small Icon for Android, ignored for iOS
   /// [color] - the color in the format '#RRGGBB', uses as an Android Notification accent color, ignored for iOS
+  /// [localizedName] - iOS only. The call's source label shown under the
+  /// caller name on the CallKit screen (e.g. 'KoshaX reminder'). Defaults to
+  /// the app name; ignored on Android.
   Future<void> updateConfig(
       {String? ringtone,
       String? icon,
       @Deprecated('Use `AndroidManifest.xml` meta-data instead')
       String? notificationIcon,
-      String? color}) {
+      String? color,
+      String? localizedName}) {
     if (!Platform.isAndroid && !Platform.isIOS) return Future.value();
 
     return _methodChannel.invokeMethod('updateConfig', {
@@ -172,6 +178,7 @@ class ConnectycubeFlutterCallKit {
       'icon': icon,
       'notification_icon': notificationIcon,
       'color': color,
+      'localized_name': localizedName,
     });
   }
 
