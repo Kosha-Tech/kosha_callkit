@@ -65,6 +65,7 @@ class CallKitController : NSObject, AVAudioPlayerDelegate {
     private var activeCallAudioUUID: UUID?
     private var callAudioPlayer: AVAudioPlayer?
     private var callAudioDownloadTask: URLSessionDataTask?
+    private var callAudioFinishWorkItem: DispatchWorkItem?
 
     override init() {
         self.callController = CXCallController()
@@ -372,21 +373,21 @@ class CallKitController : NSObject, AVAudioPlayerDelegate {
         }
 
         if let error = error {
-            activeCallAudioUUID = nil
             print("[CallKitController][playCallAudio] download failed: \(error)")
+            finishActiveCallAudio(reason: "download_failed")
             return
         }
 
         if let httpResponse = response as? HTTPURLResponse,
            !(200...299).contains(httpResponse.statusCode) {
-            activeCallAudioUUID = nil
             print("[CallKitController][playCallAudio] bad HTTP status: \(httpResponse.statusCode)")
+            finishActiveCallAudio(reason: "bad_http_status")
             return
         }
 
         guard let data = data, !data.isEmpty else {
-            activeCallAudioUUID = nil
             print("[CallKitController][playCallAudio] empty audio response")
+            finishActiveCallAudio(reason: "empty_audio_response")
             return
         }
 
@@ -406,32 +407,75 @@ class CallKitController : NSObject, AVAudioPlayerDelegate {
 
             let player = try AVAudioPlayer(data: data)
             player.delegate = self
-            // Play the spoken reminder three times. AVAudioPlayer.numberOfLoops
-            // counts additional loops after the first play, so 2 = 3 total
-            // plays. We repeat because a one-shot ~6s clip is easy for the
-            // user to miss if they were still picking up the phone.
-            player.numberOfLoops = 2
+            // AVAudioPlayer.numberOfLoops counts repeats after the first play,
+            // so 1 = 2 total plays.
+            player.numberOfLoops = 1
             player.volume = 1.0
             player.prepareToPlay()
             callAudioPlayer = player
 
             if player.play() {
+                scheduleCallAudioFallbackEnd(for: player, uuid: request.uuid)
                 print("[CallKitController][playCallAudio] playback started")
             } else {
-                activeCallAudioUUID = nil
-                callAudioPlayer = nil
                 print("[CallKitController][playCallAudio] playback did not start")
+                finishActiveCallAudio(reason: "playback_not_started")
             }
         } catch {
-            activeCallAudioUUID = nil
-            callAudioPlayer = nil
             print("[CallKitController][playCallAudio] playback failed: \(error)")
+            finishActiveCallAudio(reason: "playback_failed")
         }
+    }
+
+    private func scheduleCallAudioFallbackEnd(for player: AVAudioPlayer, uuid: UUID) {
+        callAudioFinishWorkItem?.cancel()
+
+        let totalPlays = max(player.numberOfLoops + 1, 1)
+        let fallbackDelay = max(player.duration * Double(totalPlays) + 1.0, 1.0)
+        let workItem = DispatchWorkItem { [weak self, weak player] in
+            guard let self = self,
+                  let player = player,
+                  player === self.callAudioPlayer,
+                  self.activeCallAudioUUID == uuid else {
+                return
+            }
+
+            print("[CallKitController][playCallAudio] fallback end fired")
+            self.finishActiveCallAudio(reason: "timeout", player: player)
+        }
+
+        callAudioFinishWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + fallbackDelay, execute: workItem)
+    }
+
+    private func finishActiveCallAudio(reason: String, player expectedPlayer: AVAudioPlayer? = nil) {
+        if let expectedPlayer = expectedPlayer, expectedPlayer !== callAudioPlayer {
+            return
+        }
+
+        let callUUID = activeCallAudioUUID
+        callAudioFinishWorkItem?.cancel()
+        callAudioFinishWorkItem = nil
+        callAudioDownloadTask?.cancel()
+        callAudioDownloadTask = nil
+        callAudioPlayer?.stop()
+        callAudioPlayer = nil
+        activeCallAudioUUID = nil
+
+        guard let callUUID = callUUID else {
+            return
+        }
+
+        print("[CallKitController][playCallAudio] ending call reason: \(reason)")
+        end(uuid: callUUID)
+        clearCallData(uuid: callUUID.uuidString.lowercased())
     }
 
     private func stopCallAudio(clearPending: Bool = true) {
         callAudioDownloadTask?.cancel()
         callAudioDownloadTask = nil
+        callAudioFinishWorkItem?.cancel()
+        callAudioFinishWorkItem = nil
         callAudioPlayer?.stop()
         callAudioPlayer = nil
         activeCallAudioUUID = nil
@@ -446,17 +490,8 @@ class CallKitController : NSObject, AVAudioPlayerDelegate {
             return
         }
 
-        let callUUID = activeCallAudioUUID
-        callAudioPlayer = nil
-        activeCallAudioUUID = nil
-
-        guard let callUUID = callUUID else {
-            return
-        }
-
         print("[CallKitController][playCallAudio] playback finished successfully: \(flag)")
-        end(uuid: callUUID)
-        clearCallData(uuid: callUUID.uuidString.lowercased())
+        finishActiveCallAudio(reason: "completed", player: player)
     }
 
     func audioPlayerDecodeErrorDidOccur(_ player: AVAudioPlayer, error: Error?) {
@@ -465,8 +500,7 @@ class CallKitController : NSObject, AVAudioPlayerDelegate {
         }
 
         print("[CallKitController][playCallAudio] decode error: \(String(describing: error))")
-        callAudioPlayer = nil
-        activeCallAudioUUID = nil
+        finishActiveCallAudio(reason: "decode_error", player: player)
     }
 }
 
